@@ -21,7 +21,6 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.ResultReceiver;
 import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
 import android.support.v7.app.AppCompatActivity;
 import android.util.Log;
 import android.view.View;
@@ -29,14 +28,11 @@ import android.widget.Button;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import com.google.android.gms.common.ConnectionResult;
-import com.google.android.gms.common.api.GoogleApiClient;
-import com.google.android.gms.common.api.PendingResult;
-import com.google.android.gms.common.api.ResultCallback;
-import com.google.android.gms.wearable.CapabilityApi;
+import com.google.android.gms.tasks.OnSuccessListener;
+import com.google.android.gms.wearable.CapabilityClient;
 import com.google.android.gms.wearable.CapabilityInfo;
 import com.google.android.gms.wearable.Node;
-import com.google.android.gms.wearable.NodeApi;
+import com.google.android.gms.wearable.NodeClient;
 import com.google.android.gms.wearable.Wearable;
 import com.google.android.wearable.intent.RemoteIntent;
 
@@ -49,9 +45,7 @@ import java.util.Set;
  * user to open the app listing on the Wear devices' Play Store.
  */
 public class MainMobileActivity extends AppCompatActivity implements
-        GoogleApiClient.ConnectionCallbacks,
-        GoogleApiClient.OnConnectionFailedListener,
-        CapabilityApi.CapabilityListener {
+        CapabilityClient.OnCapabilityChangedListener {
 
     private static final String TAG = "MainMobileActivity";
 
@@ -123,7 +117,8 @@ public class MainMobileActivity extends AppCompatActivity implements
     private Set<Node> mWearNodesWithApp;
     private List<Node> mAllConnectedNodes;
 
-    private GoogleApiClient mGoogleApiClient;
+    private NodeClient mNodeClient;
+    private CapabilityClient mCapabilityClient;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -143,11 +138,8 @@ public class MainMobileActivity extends AppCompatActivity implements
             }
         });
 
-        mGoogleApiClient = new GoogleApiClient.Builder(this)
-                .addApi(Wearable.API)
-                .addConnectionCallbacks(this)
-                .addOnConnectionFailedListener(this)
-                .build();
+        mNodeClient = Wearable.getNodeClient(this);
+        mCapabilityClient = Wearable.getCapabilityClient(this);
     }
 
 
@@ -156,14 +148,8 @@ public class MainMobileActivity extends AppCompatActivity implements
         Log.d(TAG, "onPause()");
         super.onPause();
 
-        if ((mGoogleApiClient != null) && mGoogleApiClient.isConnected()) {
-
-            Wearable.CapabilityApi.removeCapabilityListener(
-                    mGoogleApiClient,
-                    this,
-                    CAPABILITY_WEAR_APP);
-
-            mGoogleApiClient.disconnect();
+        if (mCapabilityClient != null) {
+            mCapabilityClient.removeListener(this);
         }
     }
 
@@ -171,20 +157,16 @@ public class MainMobileActivity extends AppCompatActivity implements
     protected void onResume() {
         Log.d(TAG, "onResume()");
         super.onResume();
-        if (mGoogleApiClient != null) {
-            mGoogleApiClient.connect();
-        }
+
+        findAllDevices();
     }
 
-    @Override
-    public void onConnected(@Nullable Bundle bundle) {
-        Log.d(TAG, "onConnected()");
-
+    private void findAllDevices() {
         // Set up listeners for capability changes (install/uninstall of remote app).
-        Wearable.CapabilityApi.addCapabilityListener(
-                mGoogleApiClient,
-                this,
-                CAPABILITY_WEAR_APP);
+
+        if (mCapabilityClient != null) {
+            mCapabilityClient.addListener(this, CAPABILITY_WEAR_APP);
+        }
 
         // Initial request for devices with our capability, aka, our Wear app installed.
         findWearDevicesWithApp();
@@ -196,20 +178,11 @@ public class MainMobileActivity extends AppCompatActivity implements
         findAllWearDevices();
     }
 
-    @Override
-    public void onConnectionSuspended(int i) {
-        Log.d(TAG, "onConnectionSuspended(): connection to location client suspended: " + i);
-    }
-
-    @Override
-    public void onConnectionFailed(@NonNull ConnectionResult connectionResult) {
-        Log.e(TAG, "onConnectionFailed(): " + connectionResult);
-    }
-
     /*
      * Updates UI when capabilities change (install/uninstall wear app).
      */
-    public void onCapabilityChanged(CapabilityInfo capabilityInfo) {
+    @Override
+    public void onCapabilityChanged(@NonNull CapabilityInfo capabilityInfo) {
         Log.d(TAG, "onCapabilityChanged(): " + capabilityInfo);
 
         mWearNodesWithApp = capabilityInfo.getNodes();
@@ -226,25 +199,13 @@ public class MainMobileActivity extends AppCompatActivity implements
 
         // You can filter this by FILTER_REACHABLE if you only want to open Nodes (Wear Devices)
         // directly connect to your phone.
-        PendingResult<CapabilityApi.GetCapabilityResult> pendingResult =
-                Wearable.CapabilityApi.getCapability(
-                        mGoogleApiClient,
-                        CAPABILITY_WEAR_APP,
-                        CapabilityApi.FILTER_ALL);
 
-        pendingResult.setResultCallback(new ResultCallback<CapabilityApi.GetCapabilityResult>() {
+        mCapabilityClient.getCapability(CAPABILITY_WEAR_APP, CapabilityClient.FILTER_ALL)
+                .addOnSuccessListener(this, new OnSuccessListener<CapabilityInfo>() {
             @Override
-            public void onResult(@NonNull CapabilityApi.GetCapabilityResult getCapabilityResult) {
-                Log.d(TAG, "onResult(): " + getCapabilityResult);
-
-                if (getCapabilityResult.getStatus().isSuccess()) {
-                    CapabilityInfo capabilityInfo = getCapabilityResult.getCapability();
-                    mWearNodesWithApp = capabilityInfo.getNodes();
-                    verifyNodeAndUpdateUI();
-
-                } else {
-                    Log.d(TAG, "Failed CapabilityApi: " + getCapabilityResult.getStatus());
-                }
+            public void onSuccess(CapabilityInfo capabilityInfo) {
+                mWearNodesWithApp = capabilityInfo.getNodes();
+                verifyNodeAndUpdateUI();
             }
         });
     }
@@ -252,20 +213,11 @@ public class MainMobileActivity extends AppCompatActivity implements
     private void findAllWearDevices() {
         Log.d(TAG, "findAllWearDevices()");
 
-        PendingResult<NodeApi.GetConnectedNodesResult> pendingResult =
-                Wearable.NodeApi.getConnectedNodes(mGoogleApiClient);
-
-        pendingResult.setResultCallback(new ResultCallback<NodeApi.GetConnectedNodesResult>() {
+        mNodeClient.getConnectedNodes().addOnSuccessListener(this, new OnSuccessListener<List<Node>>() {
             @Override
-            public void onResult(@NonNull NodeApi.GetConnectedNodesResult getConnectedNodesResult) {
-
-                if (getConnectedNodesResult.getStatus().isSuccess()) {
-                    mAllConnectedNodes = getConnectedNodesResult.getNodes();
-                    verifyNodeAndUpdateUI();
-
-                } else {
-                    Log.d(TAG, "Failed CapabilityApi: " + getConnectedNodesResult.getStatus());
-                }
+            public void onSuccess(List<Node> nodes) {
+                mAllConnectedNodes = nodes;
+                verifyNodeAndUpdateUI();
             }
         });
     }
